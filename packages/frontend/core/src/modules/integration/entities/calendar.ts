@@ -1,4 +1,5 @@
 import { Entity, LiveData, ObjectPool } from '@toeverything/infra';
+import { type Dayjs } from 'dayjs';
 import ICAL from 'ical.js';
 import { Observable, switchMap } from 'rxjs';
 
@@ -6,6 +7,8 @@ import type {
   CalendarStore,
   CalendarSubscriptionConfig,
 } from '../store/calendar';
+import type { CalendarEvent } from '../type';
+import { parseCalendarUrl } from '../utils/calendar-url-parser';
 import { CalendarSubscription } from './calendar-subscription';
 
 export class CalendarIntegration extends Entity {
@@ -45,19 +48,42 @@ export class CalendarIntegration extends Entity {
     ),
     []
   );
+  subscription$(url: string) {
+    return this.subscriptions$.map(subscriptions =>
+      subscriptions.find(sub => sub.url === url)
+    );
+  }
+  eventsByDateMap$ = LiveData.computed(get => {
+    return get(this.subscriptions$)
+      .map(sub => get(sub.eventsByDateMap$))
+      .reduce((acc, map) => {
+        for (const [date, events] of map) {
+          acc.set(
+            date,
+            acc.has(date) ? [...(acc.get(date) ?? []), ...events] : [...events]
+          );
+        }
+        return acc;
+      }, new Map<string, CalendarEvent[]>());
+  });
+
+  eventsByDate$(date: Dayjs) {
+    return this.eventsByDateMap$.map(eventsByDateMap => {
+      const dateKey = date.format('YYYY-MM-DD');
+      const events = [...(eventsByDateMap.get(dateKey) || [])];
+
+      // sort events by start time
+      return events.sort((a, b) => {
+        return (
+          (a.startAt?.toJSDate().getTime() ?? 0) -
+          (b.startAt?.toJSDate().getTime() ?? 0)
+        );
+      });
+    });
+  }
 
   async verifyUrl(_url: string) {
-    let url = _url;
-    try {
-      const urlObj = new URL(url);
-      if (urlObj.protocol === 'webcal:') {
-        urlObj.protocol = 'https';
-      }
-      url = urlObj.toString();
-    } catch (err) {
-      console.error(err);
-      throw new Error('Invalid URL');
-    }
+    const url = parseCalendarUrl(_url);
     try {
       const response = await fetch(url);
       const content = await response.text();
